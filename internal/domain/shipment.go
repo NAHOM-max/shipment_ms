@@ -3,11 +3,10 @@ package domain
 import "time"
 
 type Address struct {
+	Name    string
 	Street  string
 	City    string
-	State   string
 	Country string
-	ZipCode string
 }
 
 type Shipment struct {

@@ -1,26 +1,35 @@
 package main
 
 import (
-	"database/sql"
+	"context"
 	"log"
 	"net/http"
 	"os"
 
 	"github.com/go-chi/chi/v5"
-	_ "github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgxpool"
 
-	httphandler "shipment_ms/internal/interface/http"
+	infradb "shipment_ms/internal/infrastructure/db"
 	"shipment_ms/internal/infrastructure/temporal"
+	httphandler "shipment_ms/internal/interface/http"
 	"shipment_ms/internal/repository/postgres"
 	"shipment_ms/internal/usecase"
 )
 
 func main() {
-	db, err := sql.Open("postgres", mustEnv("DATABASE_URL"))
-	if err != nil {
-		log.Fatalf("db: %v", err)
+	ctx := context.Background()
+
+	dbURL := mustEnv("DATABASE_URL")
+
+	if err := infradb.RunMigrations(dbURL, "file://db/migrations"); err != nil {
+		log.Fatalf("migrations: %v", err)
 	}
-	defer db.Close()
+
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		log.Fatalf("pgxpool: %v", err)
+	}
+	defer pool.Close()
 
 	temporalClient, err := temporal.NewClient(mustEnv("TEMPORAL_HOST"))
 	if err != nil {
@@ -28,7 +37,7 @@ func main() {
 	}
 	defer temporalClient.Close()
 
-	repo := postgres.NewShipmentRepository(db)
+	repo := postgres.NewShipmentRepository(pool)
 	uc := usecase.NewShipmentUseCase(repo, temporalClient)
 	handler := httphandler.NewShipmentHandler(uc)
 
