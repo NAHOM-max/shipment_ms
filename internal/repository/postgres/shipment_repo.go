@@ -24,7 +24,7 @@ func (r *shipmentRepo) GetByID(ctx context.Context, id string) (*domain.Shipment
 	panic("not implemented")
 }
 
-func (r *shipmentRepo) UpdateStatus(ctx context.Context, id string, status domain.Status) error {
+func (r *shipmentRepo) UpdateStatus(ctx context.Context, id string, status domain.DeliveryStatus) error {
 	panic("not implemented")
 }
 

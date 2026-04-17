@@ -2,20 +2,28 @@ package domain
 
 import "time"
 
-type Status string
-
-const (
-	StatusPending   Status = "PENDING"
-	StatusInTransit Status = "IN_TRANSIT"
-	StatusDelivered Status = "DELIVERED"
-	StatusCancelled Status = "CANCELLED"
-)
+type Address struct {
+	Street  string
+	City    string
+	State   string
+	Country string
+	ZipCode string
+}
 
 type Shipment struct {
-	ID          string
-	Origin      string
-	Destination string
-	Status      Status
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ID             string
+	OrderID        string
+	Address        Address
+	TrackingNumber string
+	DeliveryDate   time.Time
+	Status         DeliveryStatus
+	Confirmed      bool
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+func (s *Shipment) MarkDeliveredAndConfirmed() {
+	s.Status = Delivered
+	s.Confirmed = true
+	s.UpdatedAt = time.Now().UTC()
 }

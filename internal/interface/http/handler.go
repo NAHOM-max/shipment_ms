@@ -27,14 +27,14 @@ func (h *ShipmentHandler) RegisterRoutes(r chi.Router) {
 
 func (h *ShipmentHandler) create(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Origin      string `json:"origin"`
-		Destination string `json:"destination"`
+		OrderID string       `json:"order_id"`
+		Address domain.Address `json:"address"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid body", http.StatusBadRequest)
 		return
 	}
-	s, err := h.uc.CreateShipment(r.Context(), body.Origin, body.Destination)
+	s, err := h.uc.CreateShipment(r.Context(), body.OrderID, body.Address)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -64,7 +64,7 @@ func (h *ShipmentHandler) getByID(w http.ResponseWriter, r *http.Request) {
 func (h *ShipmentHandler) updateStatus(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	var body struct {
-		Status domain.Status `json:"status"`
+		Status domain.DeliveryStatus `json:"status"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid body", http.StatusBadRequest)
