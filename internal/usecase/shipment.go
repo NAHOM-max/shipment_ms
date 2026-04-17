@@ -91,7 +91,7 @@ func (uc *ShipmentUseCase) ConfirmDelivery(ctx context.Context, shipmentID strin
 		return nil, err
 	}
 
-	if err := uc.temporal.SignalDeliveryConfirmed(ctx, shipmentID); err != nil {
+	if err := uc.temporal.SignalDeliveryConfirmed(ctx, s.OrderID, persisted.ID); err != nil {
 		// Signal failure is non-fatal: the shipment is already confirmed in the
 		// DB. Log-worthy but should not roll back the user-visible state.
 		return persisted, fmt.Errorf("shipment confirmed but temporal signal failed: %w", err)
