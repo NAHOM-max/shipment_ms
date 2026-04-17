@@ -2,8 +2,11 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -19,74 +22,110 @@ func NewShipmentRepository(pool *pgxpool.Pool) repository.ShipmentRepository {
 	return &shipmentRepo{q: New(pool)}
 }
 
-func (r *shipmentRepo) Create(ctx context.Context, s *domain.Shipment) error {
-	var uid pgtype.UUID
-	if err := uid.Scan(s.ID); err != nil {
-		return fmt.Errorf("invalid uuid %q: %w", s.ID, err)
+// Create inserts a new shipment. If a row with the same order_id already
+// exists (ON CONFLICT DO NOTHING returns no rows), it fetches and returns
+// the existing record — making the operation fully idempotent.
+func (r *shipmentRepo) Create(ctx context.Context, s *domain.Shipment) (*domain.Shipment, error) {
+	uid, err := parseUUID(s.ID)
+	if err != nil {
+		return nil, err
 	}
-	_, err := r.q.CreateShipment(ctx, CreateShipmentParams{
+
+	row, err := r.q.CreateShipment(ctx, CreateShipmentParams{
 		ID:             uid,
 		OrderID:        s.OrderID,
 		TrackingNumber: s.TrackingNumber,
-		DeliveryDate:   pgtype.Timestamptz{Time: s.DeliveryDate, Valid: true},
+		DeliveryDate:   toTimestamptz(s.DeliveryDate),
 		Status:         string(s.Status),
 		Confirmed:      s.Confirmed,
 		Name:           s.Address.Name,
 		Street:         s.Address.Street,
 		City:           s.Address.City,
 		Country:        s.Address.Country,
-		CreatedAt:      pgtype.Timestamptz{Time: s.CreatedAt, Valid: true},
-		UpdatedAt:      pgtype.Timestamptz{Time: s.UpdatedAt, Valid: true},
+		CreatedAt:      toTimestamptz(s.CreatedAt),
+		UpdatedAt:      toTimestamptz(s.UpdatedAt),
 	})
-	return err
+	if err != nil {
+		// ON CONFLICT DO NOTHING → pgx returns ErrNoRows when the insert
+		// was skipped; fall back to fetching the existing record.
+		if errors.Is(err, pgx.ErrNoRows) {
+			return r.GetByOrderID(ctx, s.OrderID)
+		}
+		return nil, fmt.Errorf("create shipment: %w", err)
+	}
+
+	return toDomain(row), nil
 }
 
 func (r *shipmentRepo) GetByID(ctx context.Context, id string) (*domain.Shipment, error) {
-	var uid pgtype.UUID
-	if err := uid.Scan(id); err != nil {
-		return nil, fmt.Errorf("invalid uuid %q: %w", id, err)
-	}
-	row, err := r.q.GetShipmentByID(ctx, uid)
+	uid, err := parseUUID(id)
 	if err != nil {
 		return nil, err
 	}
+
+	row, err := r.q.GetShipmentByID(ctx, uid)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("id %q: %w", id, repository.ErrNotFound)
+		}
+		return nil, fmt.Errorf("get shipment by id: %w", err)
+	}
+
 	return toDomain(row), nil
 }
 
 func (r *shipmentRepo) GetByOrderID(ctx context.Context, orderID string) (*domain.Shipment, error) {
 	row, err := r.q.GetShipmentByOrderID(ctx, orderID)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("order_id %q: %w", orderID, repository.ErrNotFound)
+		}
+		return nil, fmt.Errorf("get shipment by order_id: %w", err)
 	}
+
 	return toDomain(row), nil
 }
 
-func (r *shipmentRepo) UpdateStatus(ctx context.Context, id string, status domain.DeliveryStatus) error {
-	existing, err := r.GetByID(ctx, id)
+func (r *shipmentRepo) Update(ctx context.Context, s *domain.Shipment) (*domain.Shipment, error) {
+	uid, err := parseUUID(s.ID)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	var uid pgtype.UUID
-	if err := uid.Scan(id); err != nil {
-		return fmt.Errorf("invalid uuid %q: %w", id, err)
-	}
-	_, err = r.q.UpdateShipment(ctx, UpdateShipmentParams{
+
+	row, err := r.q.UpdateShipment(ctx, UpdateShipmentParams{
 		ID:             uid,
-		TrackingNumber: existing.TrackingNumber,
-		DeliveryDate:   pgtype.Timestamptz{Time: existing.DeliveryDate, Valid: true},
-		Status:         string(status),
-		Confirmed:      existing.Confirmed,
-		Name:           existing.Address.Name,
-		Street:         existing.Address.Street,
-		City:           existing.Address.City,
-		Country:        existing.Address.Country,
-		UpdatedAt:      pgtype.Timestamptz{Time: existing.UpdatedAt, Valid: true},
+		TrackingNumber: s.TrackingNumber,
+		DeliveryDate:   toTimestamptz(s.DeliveryDate),
+		Status:         string(s.Status),
+		Confirmed:      s.Confirmed,
+		Name:           s.Address.Name,
+		Street:         s.Address.Street,
+		City:           s.Address.City,
+		Country:        s.Address.Country,
+		UpdatedAt:      toTimestamptz(time.Now().UTC()),
 	})
-	return err
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("id %q: %w", s.ID, repository.ErrNotFound)
+		}
+		return nil, fmt.Errorf("update shipment: %w", err)
+	}
+
+	return toDomain(row), nil
 }
 
-func (r *shipmentRepo) List(ctx context.Context) ([]*domain.Shipment, error) {
-	panic("not implemented")
+// ── helpers ──────────────────────────────────────────────────────────────────
+
+func parseUUID(id string) (pgtype.UUID, error) {
+	var uid pgtype.UUID
+	if err := uid.Scan(id); err != nil {
+		return uid, fmt.Errorf("invalid uuid %q: %w", id, err)
+	}
+	return uid, nil
+}
+
+func toTimestamptz(t time.Time) pgtype.Timestamptz {
+	return pgtype.Timestamptz{Time: t, Valid: true}
 }
 
 func toDomain(row Shipment) *domain.Shipment {

@@ -29,20 +29,13 @@ func (uc *ShipmentUseCase) CreateShipment(ctx context.Context, orderID string, a
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
 	}
-	if err := uc.repo.Create(ctx, s); err != nil {
-		return nil, err
-	}
-	return s, nil
+	return uc.repo.Create(ctx, s)
 }
 
 func (uc *ShipmentUseCase) GetShipment(ctx context.Context, id string) (*domain.Shipment, error) {
 	return uc.repo.GetByID(ctx, id)
 }
 
-func (uc *ShipmentUseCase) UpdateStatus(ctx context.Context, id string, status domain.DeliveryStatus) error {
-	return uc.repo.UpdateStatus(ctx, id, status)
-}
-
-func (uc *ShipmentUseCase) ListShipments(ctx context.Context) ([]*domain.Shipment, error) {
-	return uc.repo.List(ctx)
+func (uc *ShipmentUseCase) UpdateShipment(ctx context.Context, s *domain.Shipment) (*domain.Shipment, error) {
+	return uc.repo.Update(ctx, s)
 }
