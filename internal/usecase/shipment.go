@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,22 +15,21 @@ import (
 type ShipmentUseCase struct {
 	repo     repository.ShipmentRepository
 	temporal TemporalClient
+	log      *slog.Logger
 }
 
-func NewShipmentUseCase(repo repository.ShipmentRepository, t TemporalClient) *ShipmentUseCase {
-	return &ShipmentUseCase{repo: repo, temporal: t}
+func NewShipmentUseCase(repo repository.ShipmentRepository, t TemporalClient, log *slog.Logger) *ShipmentUseCase {
+	return &ShipmentUseCase{repo: repo, temporal: t, log: log}
 }
 
 // ── 1. CreateShipment ────────────────────────────────────────────────────────
 
 type CreateShipmentInput struct {
-	OrderID          string
-	OrderCreatedAt   time.Time
-	Address          domain.Address
+	OrderID        string
+	OrderCreatedAt time.Time
+	Address        domain.Address
 }
 
-// CreateShipment is idempotent by OrderID: if a shipment for the order already
-// exists the existing record is returned without error.
 func (uc *ShipmentUseCase) CreateShipment(ctx context.Context, in CreateShipmentInput) (*domain.Shipment, error) {
 	s := &domain.Shipment{
 		ID:             uuid.NewString(),
@@ -51,8 +51,6 @@ type UpdateShipmentStatusInput struct {
 	NewStatus  domain.DeliveryStatus
 }
 
-// UpdateShipmentStatus validates the transition against the domain state
-// machine before persisting.
 func (uc *ShipmentUseCase) UpdateShipmentStatus(ctx context.Context, in UpdateShipmentStatusInput) (*domain.Shipment, error) {
 	s, err := uc.repo.GetByID(ctx, in.ShipmentID)
 	if err != nil {
@@ -71,29 +69,44 @@ func (uc *ShipmentUseCase) UpdateShipmentStatus(ctx context.Context, in UpdateSh
 
 // ── 3. ConfirmDelivery ───────────────────────────────────────────────────────
 
-// ConfirmDelivery is idempotent: if the shipment is already confirmed it
-// returns the current record immediately. Temporal is signalled only after
-// the state is successfully persisted.
+// ConfirmDelivery is idempotent: already-confirmed shipments are returned
+// immediately without a DB write or Temporal signal.
+// The Temporal signal is sent only after the DB commit succeeds.
+// A signal failure is non-fatal — the shipment stays confirmed in the DB and
+// the error is logged and surfaced to the caller as a warning.
 func (uc *ShipmentUseCase) ConfirmDelivery(ctx context.Context, shipmentID string) (*domain.Shipment, error) {
 	s, err := uc.repo.GetByID(ctx, shipmentID)
 	if err != nil {
 		return nil, err
 	}
 
+	// Idempotency: already confirmed — nothing to do.
 	if s.Confirmed {
+		uc.log.InfoContext(ctx, "confirm delivery: already confirmed, skipping",
+			"shipment_id", shipmentID,
+		)
 		return s, nil
 	}
 
-	s.MarkDeliveredAndConfirmed()
+	s.MarkDeliveredAndConfirmed() // sets Status=DELIVERED, Confirmed=true, UpdatedAt=now
 
 	persisted, err := uc.repo.Update(ctx, s)
 	if err != nil {
 		return nil, err
 	}
 
+	uc.log.InfoContext(ctx, "shipment confirmed",
+		"shipment_id", persisted.ID,
+		"order_id", persisted.OrderID,
+	)
+
+	// Signal after DB commit. Failure is non-fatal.
 	if err := uc.temporal.SignalDeliveryConfirmed(ctx, s.OrderID, persisted.ID); err != nil {
-		// Signal failure is non-fatal: the shipment is already confirmed in the
-		// DB. Log-worthy but should not roll back the user-visible state.
+		uc.log.WarnContext(ctx, "delivery confirmed in DB but temporal signal failed",
+			"shipment_id", persisted.ID,
+			"order_id", s.OrderID,
+			"error", err,
+		)
 		return persisted, fmt.Errorf("shipment confirmed but temporal signal failed: %w", err)
 	}
 

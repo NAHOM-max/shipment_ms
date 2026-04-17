@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -14,14 +15,16 @@ import (
 )
 
 type ShipmentHandler struct {
-	uc *usecase.ShipmentUseCase
+	uc  *usecase.ShipmentUseCase
+	log *slog.Logger
 }
 
-func NewShipmentHandler(uc *usecase.ShipmentUseCase) *ShipmentHandler {
-	return &ShipmentHandler{uc: uc}
+func NewShipmentHandler(uc *usecase.ShipmentUseCase, log *slog.Logger) *ShipmentHandler {
+	return &ShipmentHandler{uc: uc, log: log}
 }
 
 func (h *ShipmentHandler) RegisterRoutes(r chi.Router) {
+	r.Use(RequestLogger(h.log))
 	r.Post("/shipments", h.createShipment)
 	r.Get("/shipments/{id}", h.getShipment)
 	r.Patch("/shipments/status", h.updateShipmentStatus)
@@ -46,6 +49,7 @@ func (h *ShipmentHandler) createShipment(w http.ResponseWriter, r *http.Request)
 		Address:        req.Address.toDomain(),
 	})
 	if err != nil {
+		h.logError(r, "createShipment", err)
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -63,6 +67,9 @@ func (h *ShipmentHandler) getShipment(w http.ResponseWriter, r *http.Request) {
 
 	s, err := h.uc.GetShipment(r.Context(), id)
 	if err != nil {
+		if !errors.Is(err, repository.ErrNotFound) {
+			h.logError(r, "getShipment", err, "shipment_id", id)
+		}
 		writeError(w, statusFor(err), err)
 		return
 	}
@@ -87,6 +94,9 @@ func (h *ShipmentHandler) updateShipmentStatus(w http.ResponseWriter, r *http.Re
 		NewStatus:  req.Status,
 	})
 	if err != nil {
+		if !errors.Is(err, repository.ErrNotFound) && !errors.Is(err, domain.ErrInvalidTransition) {
+			h.logError(r, "updateShipmentStatus", err, "shipment_id", req.ShipmentID)
+		}
 		writeError(w, statusFor(err), err)
 		return
 	}
@@ -108,9 +118,8 @@ func (h *ShipmentHandler) confirmDelivery(w http.ResponseWriter, r *http.Request
 
 	s, err := h.uc.ConfirmDelivery(r.Context(), req.ShipmentID)
 	if err != nil {
-		// A Temporal signal failure is non-fatal: the shipment is already
-		// confirmed in the DB. Surface the warning in the response body but
-		// still return 200 with the persisted record.
+		// s != nil means DB commit succeeded but Temporal signal failed.
+		// Return 200 with the persisted record and a warning field.
 		if s != nil {
 			writeJSON(w, http.StatusOK, struct {
 				Data    shipmentResponse `json:"data"`
@@ -121,6 +130,7 @@ func (h *ShipmentHandler) confirmDelivery(w http.ResponseWriter, r *http.Request
 			})
 			return
 		}
+		h.logError(r, "confirmDelivery", err, "shipment_id", req.ShipmentID)
 		writeError(w, statusFor(err), err)
 		return
 	}
@@ -159,4 +169,11 @@ func statusFor(err error) int {
 	default:
 		return http.StatusInternalServerError
 	}
+}
+
+// logError logs 5xx-class errors with handler context. 4xx errors (not found,
+// invalid transition) are expected and not logged as errors.
+func (h *ShipmentHandler) logError(r *http.Request, handler string, err error, extra ...any) {
+	args := append([]any{"handler", handler, "error", err}, extra...)
+	h.log.ErrorContext(r.Context(), "handler error", args...)
 }
