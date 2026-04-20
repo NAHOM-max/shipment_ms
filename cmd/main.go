@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/joho/godotenv"
 
 	infradb "shipment_ms/internal/infrastructure/db"
 	"shipment_ms/internal/infrastructure/logger"
@@ -24,6 +25,10 @@ import (
 const shutdownTimeout = 15 * time.Second
 
 func main() {
+	// Load .env if present. Silently ignored in production where env vars
+	// are injected by the runtime (Docker, Kubernetes, etc.).
+	_ = godotenv.Load()
+
 	log := logger.New()
 
 	dbURL := mustEnv("DATABASE_URL", log)
@@ -57,7 +62,7 @@ func main() {
 	handler.RegisterRoutes(r)
 
 	srv := &http.Server{
-		Addr:         ":8080",
+		Addr:         ":8083",
 		Handler:      r,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,
