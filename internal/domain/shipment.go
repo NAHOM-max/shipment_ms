@@ -17,6 +17,7 @@ type Shipment struct {
 	DeliveryDate   time.Time
 	Status         DeliveryStatus
 	Confirmed      bool
+	WorkflowID     string
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 }

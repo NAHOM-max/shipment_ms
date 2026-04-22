@@ -42,6 +42,7 @@ func (r *shipmentRepo) Create(ctx context.Context, s *domain.Shipment) (*domain.
 		Street:         s.Address.Street,
 		City:           s.Address.City,
 		Country:        s.Address.Country,
+		WorkflowID:     s.WorkflowID,
 		CreatedAt:      toTimestamptz(s.CreatedAt),
 		UpdatedAt:      toTimestamptz(s.UpdatedAt),
 	})
@@ -142,7 +143,8 @@ func toDomain(row Shipment) *domain.Shipment {
 			City:    row.City,
 			Country: row.Country,
 		},
-		CreatedAt: row.CreatedAt.Time,
-		UpdatedAt: row.UpdatedAt.Time,
+		WorkflowID: row.WorkflowID,
+		CreatedAt:  row.CreatedAt.Time,
+		UpdatedAt:  row.UpdatedAt.Time,
 	}
 }

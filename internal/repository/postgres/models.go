@@ -19,6 +19,7 @@ type Shipment struct {
 	Street         string             `json:"street"`
 	City           string             `json:"city"`
 	Country        string             `json:"country"`
+	WorkflowID     string             `json:"workflow_id"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
 }

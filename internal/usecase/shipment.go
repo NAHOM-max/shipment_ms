@@ -28,6 +28,7 @@ type CreateShipmentInput struct {
 	OrderID        string
 	OrderCreatedAt time.Time
 	Address        domain.Address
+	WorkflowID     string
 }
 
 func (uc *ShipmentUseCase) CreateShipment(ctx context.Context, in CreateShipmentInput) (*domain.Shipment, error) {
@@ -38,6 +39,7 @@ func (uc *ShipmentUseCase) CreateShipment(ctx context.Context, in CreateShipment
 		TrackingNumber: generateTrackingNumber(),
 		DeliveryDate:   in.OrderCreatedAt.UTC().AddDate(0, 0, 7),
 		Status:         domain.Created,
+		WorkflowID:     in.WorkflowID,
 		CreatedAt:      time.Now().UTC(),
 		UpdatedAt:      time.Now().UTC(),
 	}
@@ -101,15 +103,15 @@ func (uc *ShipmentUseCase) ConfirmDelivery(ctx context.Context, shipmentID strin
 	)
 
 	// Signal after DB commit. Failure is non-fatal.
-	if err := uc.temporal.SignalDeliveryConfirmed(ctx, s.OrderID, persisted.ID); err != nil {
+	if err := uc.temporal.SignalDeliveryConfirmed(ctx, s.WorkflowID, s.OrderID, persisted.ID); err != nil {
 		uc.log.WarnContext(ctx, "delivery confirmed in DB but temporal signal failed",
 			"shipment_id", persisted.ID,
 			"order_id", s.OrderID,
+			"workflow_id", s.WorkflowID,
 			"error", err,
 		)
 		return persisted, fmt.Errorf("shipment confirmed but temporal signal failed: %w", err)
 	}
-
 	return persisted, nil
 }
 

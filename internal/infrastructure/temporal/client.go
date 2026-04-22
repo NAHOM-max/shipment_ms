@@ -41,12 +41,12 @@ func (c *Client) Close() {
 // Must only be called after the DB commit has succeeded.
 // Transient errors are retried with exponential backoff.
 // Non-retryable Temporal application errors and context errors return immediately.
-func (c *Client) SignalDeliveryConfirmed(ctx context.Context, orderID, shipmentID string) error {
+func (c *Client) SignalDeliveryConfirmed(ctx context.Context, workflowID, orderID, shipmentID string) error {
 	payload := map[string]string{"shipment_id": shipmentID}
 	backoff := retryInitialBackoff
 
 	for attempt := 1; attempt <= retryMaxAttempts; attempt++ {
-		err := c.tc.SignalWorkflow(ctx, orderID, "", signalDeliveryConfirmed, payload)
+		err := c.tc.SignalWorkflow(ctx, workflowID, "", signalDeliveryConfirmed, payload)
 		if err == nil {
 			c.log.InfoContext(ctx, "temporal signal sent",
 				"signal", signalDeliveryConfirmed,
@@ -58,7 +58,7 @@ func (c *Client) SignalDeliveryConfirmed(ctx context.Context, orderID, shipmentI
 		}
 
 		if isNonRetryable(err) {
-			return fmt.Errorf("signal DeliveryConfirmed (order %s, shipment %s): %w", orderID, shipmentID, err)
+			return fmt.Errorf("signal DeliveryConfirmed (order %s, shipment %s, workflow_id %s): %w", orderID, shipmentID, workflowID, err)
 		}
 
 		c.log.WarnContext(ctx, "temporal signal failed, retrying",

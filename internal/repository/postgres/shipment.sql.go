@@ -24,12 +24,13 @@ INSERT INTO shipments (
     city,
     country,
     created_at,
-    updated_at
+    updated_at,
+	workflow_id
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
 )
 ON CONFLICT (order_id) DO NOTHING
-RETURNING id, order_id, tracking_number, delivery_date, status, confirmed, name, street, city, country, created_at, updated_at
+RETURNING id, order_id, tracking_number, delivery_date, status, confirmed, name, street, city, country, created_at, updated_at, workflow_id
 `
 
 type CreateShipmentParams struct {
@@ -43,6 +44,7 @@ type CreateShipmentParams struct {
 	Street         string             `json:"street"`
 	City           string             `json:"city"`
 	Country        string             `json:"country"`
+	WorkflowID     string             `json:"workflow_id"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
 }
@@ -61,6 +63,7 @@ func (q *Queries) CreateShipment(ctx context.Context, arg CreateShipmentParams) 
 		arg.Country,
 		arg.CreatedAt,
 		arg.UpdatedAt,
+		arg.WorkflowID,
 	)
 	var i Shipment
 	err := row.Scan(
@@ -76,12 +79,13 @@ func (q *Queries) CreateShipment(ctx context.Context, arg CreateShipmentParams) 
 		&i.Country,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WorkflowID,
 	)
 	return i, err
 }
 
 const getShipmentByID = `-- name: GetShipmentByID :one
-SELECT id, order_id, tracking_number, delivery_date, status, confirmed, name, street, city, country, created_at, updated_at FROM shipments
+SELECT id, order_id, tracking_number, delivery_date, status, confirmed, name, street, city, country, created_at, updated_at, workflow_id FROM shipments
 WHERE id = $1
 `
 
@@ -101,12 +105,13 @@ func (q *Queries) GetShipmentByID(ctx context.Context, id pgtype.UUID) (Shipment
 		&i.Country,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WorkflowID,
 	)
 	return i, err
 }
 
 const getShipmentByOrderID = `-- name: GetShipmentByOrderID :one
-SELECT id, order_id, tracking_number, delivery_date, status, confirmed, name, street, city, country, created_at, updated_at FROM shipments
+SELECT id, order_id, tracking_number, delivery_date, status, confirmed, name, street, city, country, created_at, updated_at, workflow_id FROM shipments
 WHERE order_id = $1
 `
 
@@ -126,6 +131,7 @@ func (q *Queries) GetShipmentByOrderID(ctx context.Context, orderID string) (Shi
 		&i.Country,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WorkflowID,
 	)
 	return i, err
 }
@@ -143,7 +149,7 @@ SET
     country         = $9,
     updated_at      = $10
 WHERE id = $1
-RETURNING id, order_id, tracking_number, delivery_date, status, confirmed, name, street, city, country, created_at, updated_at
+RETURNING id, order_id, tracking_number, delivery_date, status, confirmed, name, street, city, country, created_at, updated_at, workflow_id
 `
 
 type UpdateShipmentParams struct {
@@ -186,6 +192,7 @@ func (q *Queries) UpdateShipment(ctx context.Context, arg UpdateShipmentParams) 
 		&i.Country,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WorkflowID,
 	)
 	return i, err
 }

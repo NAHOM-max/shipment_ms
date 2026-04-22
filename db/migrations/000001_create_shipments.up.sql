@@ -11,6 +11,7 @@ CREATE TABLE shipments (
     street           TEXT        NOT NULL,
     city             TEXT        NOT NULL,
     country          TEXT        NOT NULL,
+    workflow_id      TEXT        NOT NULL,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

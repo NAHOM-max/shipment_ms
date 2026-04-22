@@ -5,5 +5,5 @@ import "context"
 // TemporalClient is the port the use case layer needs from Temporal.
 // The concrete implementation lives in internal/infrastructure/temporal.
 type TemporalClient interface {
-	SignalDeliveryConfirmed(ctx context.Context, orderID, shipmentID string) error
+	SignalDeliveryConfirmed(ctx context.Context, workflowID, orderID, shipmentID string) error
 }

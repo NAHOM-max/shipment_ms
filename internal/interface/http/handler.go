@@ -47,6 +47,7 @@ func (h *ShipmentHandler) createShipment(w http.ResponseWriter, r *http.Request)
 		OrderID:        req.OrderID,
 		OrderCreatedAt: req.OrderCreatedAt,
 		Address:        req.Address.toDomain(),
+		WorkflowID:     req.WorkflowID,
 	})
 	if err != nil {
 		h.logError(r, "createShipment", err)
