@@ -10,11 +10,14 @@ import (
 	"syscall"
 	"time"
 
+	"strings"
+
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 
 	infradb "shipment_ms/internal/infrastructure/db"
+	"shipment_ms/internal/infrastructure/kafka"
 	"shipment_ms/internal/infrastructure/logger"
 	"shipment_ms/internal/infrastructure/temporal"
 	httphandler "shipment_ms/internal/interface/http"
@@ -54,8 +57,16 @@ func main() {
 	}
 	defer temporalClient.Close()
 
+	kafkaBrokers := strings.Split(mustEnv("KAFKA_BROKERS", log), ",")
+	kafkaProducer := kafka.NewKafkaProducer(kafkaBrokers, log)
+	defer func() {
+		if err := kafkaProducer.Close(); err != nil {
+			log.Error("kafka producer close failed", "error", err)
+		}
+	}()
+
 	repo := postgres.NewShipmentRepository(pool)
-	uc := usecase.NewShipmentUseCase(repo, temporalClient, log)
+	uc := usecase.NewShipmentUseCase(repo, temporalClient, kafkaProducer, log)
 	handler := httphandler.NewShipmentHandler(uc, log)
 
 	r := chi.NewRouter()

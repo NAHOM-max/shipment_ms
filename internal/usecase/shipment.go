@@ -13,13 +13,14 @@ import (
 )
 
 type ShipmentUseCase struct {
-	repo     repository.ShipmentRepository
-	temporal TemporalClient
-	log      *slog.Logger
+	repo      repository.ShipmentRepository
+	temporal  TemporalClient
+	events    EventPublisher
+	log       *slog.Logger
 }
 
-func NewShipmentUseCase(repo repository.ShipmentRepository, t TemporalClient, log *slog.Logger) *ShipmentUseCase {
-	return &ShipmentUseCase{repo: repo, temporal: t, log: log}
+func NewShipmentUseCase(repo repository.ShipmentRepository, t TemporalClient, e EventPublisher, log *slog.Logger) *ShipmentUseCase {
+	return &ShipmentUseCase{repo: repo, temporal: t, events: e, log: log}
 }
 
 // ── 1. CreateShipment ────────────────────────────────────────────────────────
@@ -112,6 +113,29 @@ func (uc *ShipmentUseCase) ConfirmDelivery(ctx context.Context, shipmentID strin
 		)
 		return persisted, fmt.Errorf("shipment confirmed but temporal signal failed: %w", err)
 	}
+
+	// Publish Kafka event only after Temporal signal succeeds.
+	// Failure is non-fatal — DB and signal are already committed.
+	event := domain.DeliveryConfirmedEvent{
+		ShipmentID:     persisted.ID,
+		OrderID:        persisted.OrderID,
+		TrackingNumber: persisted.TrackingNumber,
+		DeliveredAt:    persisted.UpdatedAt,
+	}
+	if err := uc.events.PublishDeliveryConfirmed(ctx, event); err != nil {
+		uc.log.WarnContext(ctx, "delivery confirmed but kafka event publish failed",
+			"shipment_id", persisted.ID,
+			"order_id", persisted.OrderID,
+			"error", err,
+		)
+		return persisted, fmt.Errorf("shipment confirmed but event publish failed: %w", err)
+	}
+
+	uc.log.InfoContext(ctx, "delivery.confirmed event published",
+		"shipment_id", persisted.ID,
+		"order_id", persisted.OrderID,
+	)
+
 	return persisted, nil
 }
 
