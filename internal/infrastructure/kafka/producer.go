@@ -68,6 +68,26 @@ func (p *KafkaProducer) PublishDeliveryConfirmed(ctx context.Context, event doma
 	return nil
 }
 
+// PublishRaw writes a raw payload to any topic with the given key.
+// Used by the outbox worker to replay persisted events.
+func (p *KafkaProducer) PublishRaw(ctx context.Context, topic, key string, payload []byte) error {
+	w := &kafka.Writer{
+		Addr:         p.writer.Addr,
+		Topic:        topic,
+		Balancer:     &kafka.Hash{},
+		RequiredAcks: kafka.RequireAll,
+	}
+	defer w.Close()
+	err := w.WriteMessages(ctx, kafka.Message{
+		Key:   []byte(key),
+		Value: payload,
+	})
+	if err != nil {
+		return fmt.Errorf("write raw message to topic %q: %w", topic, err)
+	}
+	return nil
+}
+
 // Close flushes pending messages and releases the writer.
 func (p *KafkaProducer) Close() error {
 	return p.writer.Close()

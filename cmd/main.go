@@ -7,10 +7,9 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
-
-	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -19,6 +18,7 @@ import (
 	infradb "shipment_ms/internal/infrastructure/db"
 	"shipment_ms/internal/infrastructure/kafka"
 	"shipment_ms/internal/infrastructure/logger"
+	"shipment_ms/internal/infrastructure/outbox"
 	"shipment_ms/internal/infrastructure/temporal"
 	httphandler "shipment_ms/internal/interface/http"
 	"shipment_ms/internal/repository/postgres"
@@ -28,8 +28,6 @@ import (
 const shutdownTimeout = 15 * time.Second
 
 func main() {
-	// Load .env if present. Silently ignored in production where env vars
-	// are injected by the runtime (Docker, Kubernetes, etc.).
 	_ = godotenv.Load()
 
 	log := logger.New()
@@ -41,7 +39,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
@@ -65,10 +64,20 @@ func main() {
 		}
 	}()
 
-	repo := postgres.NewShipmentRepository(pool)
-	uc := usecase.NewShipmentUseCase(repo, temporalClient, kafkaProducer, log)
-	handler := httphandler.NewShipmentHandler(uc, log)
+	// ── repositories ─────────────────────────────────────────────────────────
+	shipmentRepo := postgres.NewShipmentRepository(pool)
+	outboxRepo := postgres.NewOutboxRepository(pool)
 
+	// ── use case ─────────────────────────────────────────────────────────────
+	uc := usecase.NewShipmentUseCase(shipmentRepo, temporalClient, log)
+
+	// ── outbox worker ─────────────────────────────────────────────────────────
+	pollInterval := 2 * time.Second
+	worker := outbox.NewWorker(outboxRepo, kafkaProducer, pollInterval, log)
+	go worker.Run(ctx)
+
+	// ── HTTP server ───────────────────────────────────────────────────────────
+	handler := httphandler.NewShipmentHandler(uc, log)
 	r := chi.NewRouter()
 	handler.RegisterRoutes(r)
 
@@ -80,7 +89,6 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	// Start server in background.
 	go func() {
 		log.Info("server starting", "addr", srv.Addr)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -89,13 +97,10 @@ func main() {
 		}
 	}()
 
-	// Block until SIGINT or SIGTERM.
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	sig := <-quit
-	log.Info("shutdown signal received", "signal", sig.String())
+	// Block until signal.
+	<-ctx.Done()
+	log.Info("shutdown signal received")
 
-	// Give in-flight requests up to shutdownTimeout to complete.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 

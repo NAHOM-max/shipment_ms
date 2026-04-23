@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
@@ -12,15 +13,19 @@ import (
 	"shipment_ms/internal/repository"
 )
 
+const (
+	eventTypeDeliveryConfirmed = "delivery.confirmed"
+	aggregateTypeShipment      = "shipment"
+)
+
 type ShipmentUseCase struct {
-	repo      repository.ShipmentRepository
-	temporal  TemporalClient
-	events    EventPublisher
-	log       *slog.Logger
+	repo     repository.ShipmentRepository
+	temporal TemporalClient
+	log      *slog.Logger
 }
 
-func NewShipmentUseCase(repo repository.ShipmentRepository, t TemporalClient, e EventPublisher, log *slog.Logger) *ShipmentUseCase {
-	return &ShipmentUseCase{repo: repo, temporal: t, events: e, log: log}
+func NewShipmentUseCase(repo repository.ShipmentRepository, t TemporalClient, log *slog.Logger) *ShipmentUseCase {
+	return &ShipmentUseCase{repo: repo, temporal: t, log: log}
 }
 
 // ── 1. CreateShipment ────────────────────────────────────────────────────────
@@ -59,31 +64,25 @@ func (uc *ShipmentUseCase) UpdateShipmentStatus(ctx context.Context, in UpdateSh
 	if err != nil {
 		return nil, err
 	}
-
 	if !domain.IsValidTransition(s.Status, in.NewStatus) {
 		return nil, fmt.Errorf("transition %s → %s: %w", s.Status, in.NewStatus, domain.ErrInvalidTransition)
 	}
-
 	s.Status = in.NewStatus
 	s.UpdatedAt = time.Now().UTC()
-
 	return uc.repo.Update(ctx, s)
 }
 
 // ── 3. ConfirmDelivery ───────────────────────────────────────────────────────
 
 // ConfirmDelivery is idempotent: already-confirmed shipments are returned
-// immediately without a DB write or Temporal signal.
-// The Temporal signal is sent only after the DB commit succeeds.
-// A signal failure is non-fatal — the shipment stays confirmed in the DB and
-// the error is logged and surfaced to the caller as a warning.
+// immediately. The shipment update and outbox event insertion are committed
+// in a single transaction. The Temporal signal fires only after that commit.
 func (uc *ShipmentUseCase) ConfirmDelivery(ctx context.Context, shipmentID string) (*domain.Shipment, error) {
 	s, err := uc.repo.GetByID(ctx, shipmentID)
 	if err != nil {
 		return nil, err
 	}
 
-	// Idempotency: already confirmed — nothing to do.
 	if s.Confirmed {
 		uc.log.InfoContext(ctx, "confirm delivery: already confirmed, skipping",
 			"shipment_id", shipmentID,
@@ -91,50 +90,51 @@ func (uc *ShipmentUseCase) ConfirmDelivery(ctx context.Context, shipmentID strin
 		return s, nil
 	}
 
-	s.MarkDeliveredAndConfirmed() // sets Status=DELIVERED, Confirmed=true, UpdatedAt=now
+	s.MarkDeliveredAndConfirmed()
 
-	persisted, err := uc.repo.Update(ctx, s)
+	payload, err := buildOutboxPayload(s)
 	if err != nil {
 		return nil, err
 	}
 
-	uc.log.InfoContext(ctx, "shipment confirmed",
+	outboxEvent := &domain.OutboxEvent{
+		ID:            uuid.NewString(),
+		AggregateType: aggregateTypeShipment,
+		AggregateID:   s.ID,
+		EventType:     eventTypeDeliveryConfirmed,
+		Payload:       payload,
+	}
+
+	// ── single transaction: update shipment + insert outbox event ────────────
+	var persisted *domain.Shipment
+	if err := uc.repo.WithinTx(ctx, func(tx repository.TxRepository) error {
+		updated, err := tx.UpdateShipment(ctx, s)
+		if err != nil {
+			return err
+		}
+		persisted = updated
+		return tx.CreateOutboxEvent(ctx, outboxEvent)
+	}); err != nil {
+		return nil, fmt.Errorf("confirm delivery transaction: %w", err)
+	}
+	// ── commit done ──────────────────────────────────────────────────────────
+
+	uc.log.InfoContext(ctx, "shipment confirmed and outbox event created",
 		"shipment_id", persisted.ID,
 		"order_id", persisted.OrderID,
+		"event_id", outboxEvent.ID,
 	)
 
-	// Signal after DB commit. Failure is non-fatal.
+	// Signal Temporal after commit. Failure is non-fatal — the outbox worker
+	// guarantees Kafka delivery regardless.
 	if err := uc.temporal.SignalDeliveryConfirmed(ctx, s.WorkflowID, s.OrderID, persisted.ID); err != nil {
 		uc.log.WarnContext(ctx, "delivery confirmed in DB but temporal signal failed",
 			"shipment_id", persisted.ID,
 			"order_id", s.OrderID,
-			"workflow_id", s.WorkflowID,
 			"error", err,
 		)
 		return persisted, fmt.Errorf("shipment confirmed but temporal signal failed: %w", err)
 	}
-
-	// Publish Kafka event only after Temporal signal succeeds.
-	// Failure is non-fatal — DB and signal are already committed.
-	event := domain.DeliveryConfirmedEvent{
-		ShipmentID:     persisted.ID,
-		OrderID:        persisted.OrderID,
-		TrackingNumber: persisted.TrackingNumber,
-		DeliveredAt:    persisted.UpdatedAt,
-	}
-	if err := uc.events.PublishDeliveryConfirmed(ctx, event); err != nil {
-		uc.log.WarnContext(ctx, "delivery confirmed but kafka event publish failed",
-			"shipment_id", persisted.ID,
-			"order_id", persisted.OrderID,
-			"error", err,
-		)
-		return persisted, fmt.Errorf("shipment confirmed but event publish failed: %w", err)
-	}
-
-	uc.log.InfoContext(ctx, "delivery.confirmed event published",
-		"shipment_id", persisted.ID,
-		"order_id", persisted.OrderID,
-	)
 
 	return persisted, nil
 }
@@ -149,4 +149,23 @@ func (uc *ShipmentUseCase) GetShipment(ctx context.Context, shipmentID string) (
 
 func generateTrackingNumber() string {
 	return "TRK-" + uuid.NewString()[:8]
+}
+
+func buildOutboxPayload(s *domain.Shipment) ([]byte, error) {
+	v := struct {
+		ShipmentID     string    `json:"shipment_id"`
+		OrderID        string    `json:"order_id"`
+		TrackingNumber string    `json:"tracking_number"`
+		DeliveredAt    time.Time `json:"delivered_at"`
+	}{
+		ShipmentID:     s.ID,
+		OrderID:        s.OrderID,
+		TrackingNumber: s.TrackingNumber,
+		DeliveredAt:    s.UpdatedAt,
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, fmt.Errorf("build outbox payload: %w", err)
+	}
+	return b, nil
 }

@@ -15,11 +15,30 @@ import (
 )
 
 type shipmentRepo struct {
-	q *Queries
+	q    *Queries
+	pool *pgxpool.Pool
 }
 
 func NewShipmentRepository(pool *pgxpool.Pool) repository.ShipmentRepository {
-	return &shipmentRepo{q: New(pool)}
+	return &shipmentRepo{q: New(pool), pool: pool}
+}
+
+// WithinTx opens a pgx transaction, builds a TxRepository scoped to it,
+// calls fn, and commits or rolls back based on the returned error.
+func (r *shipmentRepo) WithinTx(ctx context.Context, fn func(repository.TxRepository) error) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	txRepo := newCombinedTxRepo(New(tx))
+	if err := fn(txRepo); err != nil {
+		_ = tx.Rollback(ctx)
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit tx: %w", err)
+	}
+	return nil
 }
 
 // Create inserts a new shipment. If a row with the same order_id already

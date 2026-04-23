@@ -20,4 +20,23 @@ type ShipmentRepository interface {
 
 	// Update overwrites all mutable fields of an existing shipment.
 	Update(ctx context.Context, s *domain.Shipment) (*domain.Shipment, error)
+
+	// WithinTx executes fn inside a database transaction. The TxRepository
+	// passed to fn shares the same transaction for all operations.
+	WithinTx(ctx context.Context, fn func(TxRepository) error) error
+}
+
+// OutboxRepository manages outbox events for reliable async publishing.
+type OutboxRepository interface {
+	CreateOutboxEvent(ctx context.Context, event *domain.OutboxEvent) error
+	FetchPending(ctx context.Context, maxRetries, limit int) ([]*domain.OutboxEvent, error)
+	MarkSent(ctx context.Context, eventID string) error
+	MarkFailed(ctx context.Context, eventID string) error
+}
+
+// TxRepository combines shipment and outbox operations within a transaction.
+// Passed to the callback in ShipmentRepository.WithinTx.
+type TxRepository interface {
+	UpdateShipment(ctx context.Context, s *domain.Shipment) (*domain.Shipment, error)
+	CreateOutboxEvent(ctx context.Context, event *domain.OutboxEvent) error
 }
